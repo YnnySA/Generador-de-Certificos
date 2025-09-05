@@ -19,61 +19,60 @@ def eliminar_fila():
 # Función para crear el informe en Excel
 def generar_informe_excel(datos):
     try:
-        # Cargar la plantilla (asegúrate de tener el archivo 'CERTIFICO.xlsx' en el mismo directorio)
-        wb = load_workbook('data/CERTIFICO.xlsx')
+        # Cargar la plantilla 
+        wb = load_workbook('data/ejemplo.xlsx')
         ws = wb.active
         
         # Llenar los datos en las celdas correspondientes
         # Nota: Las celdas deben coincidir con la estructura de tu plantilla
         # Ajusta estas referencias según tu archivo real
         
-        # Fecha (celda E5 en la imagen)
+        # Fecha 
         if datos['fecha']:
-            ws['E5'] = datos['fecha']
+            ws['E6'] = datos['fecha']
             
-        # Contrato (celda A13 en la imagen)
+        # Contrato 
         if datos['contrato']:
-            ws['A13'] = datos['contrato']
+            ws['B13'] = datos['contrato']
             
-        # Contratista (celda A15 en la imagen)
+        # Contratista 
         if datos['contratista']:
-            ws['A15'] = datos['contratista']
+            ws['B16'] = datos['contratista']
             
-        # Obra (celda A17 en la imagen)
+        # Obra 
         if datos['obra']:
-            ws['A17'] = datos['obra']
-            
-        # Código de Obra (celda F17 en la imagen)
-        if datos['codigo_obra']:
-            ws['F17'] = datos['codigo_obra']
+            ws['B16'] = datos['obra']
+        
+        if datos['codigo_obra'] is not None: # Verificar que el código de obra exista
+            ws['E18'] = f"{datos['codigo_obra']}"
             
         # Aprobación (celda A19 en la imagen)
         if datos['aprobacion']:
-            ws['A19'] = datos['aprobacion']
+            ws['B18'] = datos['aprobacion']
             
         # Valor total contrato (celda A23 en la imagen)
         if datos['valor_contrato']:
-            ws['A23'] = f"Valor total Ctto: {datos['valor_contrato']:,.2f} CUP"
+            ws['C20'] = f"{datos['valor_contrato']:,.2f}"
             
         # Valor pagado (celda A25 en la imagen)
         if datos['valor_pagado']:
-            ws['A25'] = f"Valor Pagado {datos['valor_pagado']:,.2f} CUP"
+            ws['C22'] = f"{datos['valor_pagado']:,.2f}"
             
         # Insertar las facturas comenzando desde la fila 28 (ajusta según tu plantilla)
-        fila_inicio_facturas = 28
+        fila_inicio_facturas = 26
         for i, factura in enumerate(datos['facturas']):
             fila = fila_inicio_facturas + i
             if fila <= ws.max_row:
                 ws[f'A{fila}'] = factura['proveedor']
-                ws[f'B{fila}'] = factura['factura']
-                ws[f'C{fila}'] = factura['importe']
-                ws[f'D{fila}'] = factura['codigo']
+                ws[f'C{fila}'] = factura['factura']
+                ws[f'E{fila}'] = factura['importe']
+                ws[f'F{fila}'] = factura['codigo']
             else:
                 # Si hay más filas, agregarlas
                 ws.append([factura['proveedor'], factura['factura'], factura['importe'], factura['codigo']])
         
         # Total de facturas (celda E35 en la imagen, aproximadamente)
-        ws['E35'] = f"{datos['total_facturas']:,.2f} CUP"
+        ws['E32'] = f"{datos['total_facturas']:,.2f} CUP"
         
         # Guardar el archivo en memoria
         output = BytesIO()
@@ -242,8 +241,9 @@ if st.button("📄 Generar Informe en Excel"):
         'fecha': fecha,
         'contrato': contrato,
         'contratista': contratista,
-        'obra': f"Obra {codigo_obra} {nombre_obra}" if codigo_obra and nombre_obra else "",
+        'obra': f"{codigo_obra} {nombre_obra}" if codigo_obra and nombre_obra else "",
         'codigo_obra': f"{codigo_obra}02" if codigo_obra else "",
+        'nombre_obra': nombre_obra,
         'aprobacion': aprobacion,
         'valor_contrato': valor_contrato,
         'valor_pagado': valor_pagado,
@@ -262,4 +262,3 @@ if st.button("📄 Generar Informe en Excel"):
             file_name="Certificado_Facturas.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         )
-    
