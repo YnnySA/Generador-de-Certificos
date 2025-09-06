@@ -5,13 +5,12 @@ from io import BytesIO
 import sqlite3
 import os
 from datetime import datetime
-import base64
 
 # Inicializar session state 
 if 'facturas_rows' not in st.session_state:
     st.session_state.facturas_rows = 1
 
-# Configuración de la base de datos
+# Configuración de la base de datos y directorios
 DB_NAME = "certificados.db"
 EXCEL_TEMPLATES_DIR = "data"
 CERTIFICADOS_DIR = "certificados_generados"
@@ -33,10 +32,10 @@ def init_db():
         aprobacion TEXT NOT NULL
     )''')
     
-    # Crear tabla para certificados
+    # Crear tabla para certificados (con UNIQUE constraint correcta)
     c.execute('''CREATE TABLE IF NOT EXISTS certificados (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
-        numero_certificado INTEGER UNIQUE NOT NULL,
+        numero_certificado INTEGER NOT NULL,
         obra_id INTEGER,
         fecha DATE NOT NULL,
         contrato TEXT,
@@ -46,7 +45,8 @@ def init_db():
         total_facturas REAL,
         archivo_path TEXT,
         fecha_generacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-        FOREIGN KEY (obra_id) REFERENCES obras (id)
+        FOREIGN KEY (obra_id) REFERENCES obras (id),
+        UNIQUE(obra_id, numero_certificado)
     )''')
     
     # Crear tabla para facturas
@@ -79,13 +79,15 @@ def init_db():
     conn.commit()
     conn.close()
 
-# Función para obtener el siguiente número de certificado
-def get_next_certificado_number():
+# Función para obtener el siguiente número de certificado PARA UNA OBRA ESPECÍFICA
+def get_next_certificado_number_por_obra(obra_id):
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
-    c.execute("SELECT MAX(numero_certificado) FROM certificados")
+    # Obtiene el máximo número de certificado para la obra dada
+    c.execute("SELECT MAX(numero_certificado) FROM certificados WHERE obra_id = ?", (obra_id,))
     result = c.fetchone()[0]
     conn.close()
+    # Si no hay certificados para esta obra, el siguiente es 1
     return (result or 0) + 1
 
 # Función para obtener todas las obras
@@ -153,16 +155,16 @@ def get_certificados_by_obra(obra_id=None):
     c = conn.cursor()
     
     if obra_id:
-        c.execute("""SELECT c.*, o.nombre as obra_nombre 
+        c.execute("""SELECT c.*, o.nombre as obra_nombre, o.codigo as obra_codigo
                      FROM certificados c 
                      JOIN obras o ON c.obra_id = o.id 
                      WHERE c.obra_id = ? 
                      ORDER BY c.numero_certificado DESC""", (obra_id,))
     else:
-        c.execute("""SELECT c.*, o.nombre as obra_nombre 
+        c.execute("""SELECT c.*, o.nombre as obra_nombre, o.codigo as obra_codigo
                      FROM certificados c 
                      JOIN obras o ON c.obra_id = o.id 
-                     ORDER BY c.numero_certificado DESC""")
+                     ORDER BY o.nombre, c.numero_certificado DESC""")
     
     certificados = c.fetchall()
     conn.close()
@@ -204,21 +206,23 @@ def validar_campos_obligatorios(fecha, obra_seleccionada, facturas_data):
     
     return errores
 
-# Función para crear el informe en Excel
+# Función para crear el informe en Excel 
 def generar_informe_excel(datos, numero_certificado):
     try:
         # Cargar la plantilla 
-        template_path = os.path.join(EXCEL_TEMPLATES_DIR, 'ejemplo.xlsx')
-        wb = load_workbook(template_path)
+        wb = load_workbook('data/ejemplo.xlsx')
         ws = wb.active
         
         # Llenar los datos en las celdas correspondientes
-        # Número de certificado en E6 (como solicitaste)
-        ws['E6'] = numero_certificado
+        # Nota: Las celdas deben coincidir con la estructura de tu plantilla
+        # Ajusta estas referencias según tu archivo real
+        
+        # Colocar el número de certificado consecutivo 
+        ws['E11'] = numero_certificado
         
         # Fecha 
         if datos['fecha']:
-            ws['E6'] = datos['fecha']  # Ajustar según la celda correcta
+            ws['E6'] = datos['fecha']
             
         # Contrato 
         if datos['contrato']:
@@ -226,28 +230,29 @@ def generar_informe_excel(datos, numero_certificado):
             
         # Contratista 
         if datos['contratista']:
-            ws['B14'] = datos['contratista']
+            ws['B16'] = datos['contratista']
             
         # Obra 
         if datos['obra']:
             ws['B16'] = datos['obra']
         
-        if datos['codigo_obra'] is not None:
+        if datos['codigo_obra'] is not None: # Verificar que el código de obra exista
             ws['E18'] = f"{datos['codigo_obra']}"
             
-        # Aprobación
+        # Aprobación (celda A19 en la imagen)
         if datos['aprobacion']:
             ws['B18'] = datos['aprobacion']
+            ws['C32'] = datos['aprobacion']
             
-        # Valor total contrato
+        # Valor total contrato (celda A23 en la imagen)
         if datos['valor_contrato']:
             ws['C20'] = f"{datos['valor_contrato']:,.2f}"
             
-        # Valor pagado
+        # Valor pagado (celda A25 en la imagen)
         if datos['valor_pagado']:
             ws['C22'] = f"{datos['valor_pagado']:,.2f}"
             
-        # Insertar las facturas comenzando desde la fila 26
+        # Insertar las facturas comenzando desde la fila 28 (ajusta según tu plantilla)
         fila_inicio_facturas = 26
         for i, factura in enumerate(datos['facturas']):
             fila = fila_inicio_facturas + i
@@ -260,7 +265,7 @@ def generar_informe_excel(datos, numero_certificado):
                 # Si hay más filas, agregarlas
                 ws.append([factura['proveedor'], factura['factura'], factura['importe'], factura['codigo']])
         
-        # Total de facturas
+        # Total de facturas (celda E35 en la imagen, aproximadamente)
         ws['E32'] = f"{datos['total_facturas']:,.2f} CUP"
         
         # Guardar el archivo en memoria
@@ -279,27 +284,32 @@ def guardar_certificado_db(numero_certificado, obra_id, fecha, contrato, contrat
     conn = sqlite3.connect(DB_NAME)
     c = conn.cursor()
     
-    # Insertar certificado
-    c.execute("""INSERT INTO certificados 
-                 (numero_certificado, obra_id, fecha, contrato, contratista, valor_contrato, 
-                  valor_pagado, total_facturas, archivo_path) 
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-              (numero_certificado, obra_id, fecha, contrato, contratista, 
-               valor_contrato, valor_pagado, total_facturas, archivo_path))
-    
-    certificado_id = c.lastrowid
-    
-    # Insertar facturas
-    for factura in facturas_data:
-        c.execute("""INSERT INTO facturas 
-                     (certificado_id, proveedor, numero_factura, importe, codigo) 
-                     VALUES (?, ?, ?, ?, ?)""",
-                  (certificado_id, factura['proveedor'], factura['factura'], 
-                   factura['importe'], factura['codigo']))
-    
-    conn.commit()
-    conn.close()
-    return certificado_id
+    try:
+        # Insertar certificado con el número específico por obra
+        c.execute("""INSERT INTO certificados 
+                     (numero_certificado, obra_id, fecha, contrato, contratista, valor_contrato, 
+                      valor_pagado, total_facturas, archivo_path) 
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                  (numero_certificado, obra_id, fecha, contrato, contratista, 
+                   valor_contrato, valor_pagado, total_facturas, archivo_path))
+        
+        certificado_id = c.lastrowid
+        
+        # Insertar facturas
+        for factura in facturas_data:
+            c.execute("""INSERT INTO facturas (certificado_id, proveedor, numero_factura, importe, codigo) 
+                         VALUES (?, ?, ?, ?, ?)""",
+                      (certificado_id, factura['proveedor'], factura['factura'], 
+                       factura['importe'], factura['codigo']))
+        
+        conn.commit()
+        conn.close()
+        return certificado_id
+    except sqlite3.IntegrityError as e:
+        conn.rollback()
+        conn.close()
+        # Relanzar la excepción para que se maneje en el lugar de llamada
+        raise e
 
 # Inicializar la base de datos
 init_db()
@@ -330,11 +340,14 @@ if menu_opcion == "🏠 Crear Nuevo Certificado":
     contratista = st.text_input('Contratista')
 
     # Obtener obras de la base de datos
-    obras_db = get_all_obras()
-    obras_dict = {obra[1]: obra for obra in obras_db}  # nombre: (id, nombre, codigo, aprobacion)
-    
-    obras_nombres = list(obras_dict.keys())
-    obras = st.selectbox('Obra', obras_nombres, index=None, placeholder="Despliegue y seleccione una Obra")
+    data_obras = pd.DataFrame(
+        {
+        "Obras": ['Mejoras Cayo Saetía', 'Marina Cayo Saetía', 'Viviendas Mayarí', 'Delfinario Cayo Saetía', 'Canal Dumois'], 
+        "Código de Obra": [759, 677, 699, 605, 872],
+        "Aprobación": ['A 37-018-15', 'A 37-024-19', 'A 37-037-20', 'A 37-025-19', 'A 37-038-21'],   
+        })
+
+    obras = st.selectbox('Obra',data_obras["Obras"], index=None, placeholder="Despliegue y seleccione una Obra")
 
     # Variables para almacenar datos de la obra seleccionada
     codigo_obra = None
@@ -344,25 +357,39 @@ if menu_opcion == "🏠 Crear Nuevo Certificado":
 
     # Cuando se selecciona una obra
     if obras:
-        obra_data = obras_dict[obras]
-        obra_id = obra_data[0]
-        nombre_obra = obra_data[1]
-        codigo_obra = obra_data[2]
-        aprobacion = obra_data[3]
+        # Filtrar el DataFrame por la obra seleccionada
+        obra_seleccionada = data_obras[data_obras["Obras"] == obras]
         
-        col1, col2, col3 = st.columns([1, 1, 1])
-        with col2:
-            # Mostrar el código concatenado con el nombre de la Obra.
-            st.write(f"Obra {codigo_obra}  {nombre_obra}")
+        # Verificar que se encontró la obra
+        if not obra_seleccionada.empty:
+            # Obtener el código de obra seleccionada
+            codigo_obra = obra_seleccionada["Código de Obra"].iloc[0]
+            nombre_obra = obra_seleccionada["Obras"].iloc[0]
+            
+            # Obtener ID de la obra de la base de datos
+            obras_db = get_all_obras()
+            for obra_db in obras_db:
+                if obra_db[1] == nombre_obra and obra_db[2] == codigo_obra:
+                    obra_id = obra_db[0]
+                    break
+            
+            col1, col2, col3 = st.columns([1, 1, 1])
+            with col2:
+                # Mostrar el código concatenado con el nombre de la Obra.
+                st.write(f"Obra {codigo_obra}  {nombre_obra}")
 
-        # Obtener la Aprobación de la obra en cuestión
-        col1, col2 = st.columns([2, 1])
-        with col1:
-            # Mostrar el resultado
-            st.write(f"Aprobación: {aprobacion}")
-        with col2:            
-            # Mostrar el código del objeto de obra                    
-            st.write(f"CODIGO DE OBRA  {codigo_obra}02")        
+            # Obtener la Aprobación de la obra en cuestión
+            aprobacion = obra_seleccionada["Aprobación"].iloc[0]  
+            
+            col1, col2 = st.columns([2, 1])
+            with col1:
+                # Mostrar el resultado
+                st.write(f"Aprobación: {aprobacion}")
+            with col2:            
+                # Mostrar el código del objeto de obra                    
+                st.write(f"CODIGO DE OBRA  {codigo_obra}02")        
+        else:
+            st.warning("No se encontraron datos para esta obra")
 
     valor_contrato = st.number_input(
         'Valor Total del Contrato (CUP):',
@@ -469,55 +496,59 @@ if menu_opcion == "🏠 Crear Nuevo Certificado":
             for error in errores:
                 st.write(error)
         else:
-            # Obtener número de certificado consecutivo
-            numero_certificado = get_next_certificado_number()
-            
-            # Recopilar todos los datos
-            datos_informe = {
-                'fecha': fecha,
-                'contrato': contrato,
-                'contratista': contratista,
-                'obra': f"{codigo_obra} {nombre_obra}" if codigo_obra and nombre_obra else "",
-                'codigo_obra': f"{codigo_obra}02" if codigo_obra else "",
-                'nombre_obra': nombre_obra,
-                'aprobacion': aprobacion,
-                'valor_contrato': valor_contrato,
-                'valor_pagado': valor_pagado,
-                'facturas': facturas_data,
-                'total_facturas': total_facturas
-            }
-            
-            # Generar el informe
-            excel_data = generar_informe_excel(datos_informe, numero_certificado)
-            
-            if excel_data:
-                # Crear directorio para la obra si no existe
-                obra_dir = os.path.join(CERTIFICADOS_DIR, nombre_obra.replace("/", "_").replace("\\", "_"))
-                os.makedirs(obra_dir, exist_ok=True)
-                
-                # Guardar archivo físico
-                filename = f"certificado_{numero_certificado:04d}.xlsx"
-                file_path = os.path.join(obra_dir, filename)
-                
-                with open(file_path, "wb") as f:
-                    f.write(excel_data.getvalue())
-                
-                # Guardar en base de datos
-                certificado_id = guardar_certificado_db(
-                    numero_certificado, obra_id, fecha, contrato, contratista,
-                    valor_contrato, valor_pagado, total_facturas, facturas_data, file_path
-                )
-                
-                # Ofrecer el archivo para descargar
-                st.download_button(
-                    label="📥 Descargar Informe",
-                    data=excel_data,
-                    file_name=filename,
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
-                st.success(f"✅ Certificado #{numero_certificado} generado correctamente!")
+            # Verificar que se haya seleccionado una obra para obtener su ID
+            if not obra_id:
+                 st.error("❌ Error: No se pudo identificar la obra seleccionada.")
             else:
-                st.error("❌ Error al generar el informe. Por favor intente nuevamente.")
+                # Obtener número de certificado consecutivo PARA LA OBRA SELECCIONADA
+                numero_certificado = get_next_certificado_number_por_obra(obra_id)
+                
+                # Recopilar todos los datos
+                datos_informe = {
+                    'fecha': fecha,
+                    'contrato': contrato,
+                    'contratista': contratista,
+                    'obra': f"{codigo_obra} {nombre_obra}" if codigo_obra and nombre_obra else "",
+                    'codigo_obra': f"{codigo_obra}02" if codigo_obra else "",
+                    'nombre_obra': nombre_obra,
+                    'aprobacion': aprobacion,
+                    'valor_contrato': valor_contrato,
+                    'valor_pagado': valor_pagado,
+                    'facturas': facturas_data,
+                    'total_facturas': total_facturas
+                }
+                
+                # Generar el informe
+                excel_data = generar_informe_excel(datos_informe, numero_certificado)
+                
+                if excel_data:
+                    # Crear directorio para la obra si no existe
+                    obra_dir = os.path.join(CERTIFICADOS_DIR, nombre_obra.replace("/", "_").replace("\\", "_"))
+                    os.makedirs(obra_dir, exist_ok=True)
+                    
+                    # Guardar archivo físico con el nombre que incluye el número de certificado
+                    filename = f"certificado_{numero_certificado:04d}.xlsx"
+                    file_path = os.path.join(obra_dir, filename)
+                    
+                    with open(file_path, "wb") as f:
+                        f.write(excel_data.getvalue())
+                    
+                    # Guardar en base de datos
+                    certificado_id = guardar_certificado_db(
+                        numero_certificado, obra_id, fecha, contrato, contratista,
+                        valor_contrato, valor_pagado, total_facturas, facturas_data, file_path
+                    )
+                    
+                    # Ofrecer el archivo para descargar
+                    st.download_button(
+                        label="📥 Descargar Informe",
+                        data=excel_data,
+                        file_name=filename,
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                    st.success(f"✅ Certificado #{numero_certificado} para la obra '{nombre_obra}' generado correctamente!")
+                else:
+                    st.error("❌ Error al generar el informe. Por favor intente nuevamente.")
 
 elif menu_opcion == "📋 Ver Certificados":
     st.title("Ver Certificados Generados")
@@ -540,13 +571,14 @@ elif menu_opcion == "📋 Ver Certificados":
         st.write(f"### Certificados encontrados: {len(certificados)}")
         
         # Mostrar tabla de certificados
+        # Actualizado para incluir el código de la obra
         df_certificados = pd.DataFrame(certificados, 
                                      columns=['ID', 'N° Certificado', 'Obra ID', 'Fecha', 'Contrato', 
                                              'Contratista', 'Valor Contrato', 'Valor Pagado', 
-                                             'Total Facturas', 'Archivo', 'Fecha Generación', 'Obra Nombre'])
+                                             'Total Facturas', 'Archivo', 'Fecha Generación', 'Obra Nombre', 'Obra Codigo'])
         
         # Seleccionar columnas relevantes para mostrar
-        df_mostrar = df_certificados[['N° Certificado', 'Obra Nombre', 'Fecha', 'Contratista', 
+        df_mostrar = df_certificados[['N° Certificado', 'Obra Nombre', 'Obra Codigo', 'Fecha', 'Contratista', 
                                     'Valor Contrato', 'Valor Pagado', 'Total Facturas', 'Fecha Generación']]
         
         # Formatear valores monetarios
@@ -562,7 +594,7 @@ elif menu_opcion == "📋 Ver Certificados":
         certificado_id_seleccion = st.selectbox(
             "Seleccione un certificado para descargar:",
             options=certificados,
-            format_func=lambda x: f"#{x[1]} - {x[11]} - {x[3]}"  # N° - Obra - Fecha
+            format_func=lambda x: f"#{x[1]} - {x[11]} ({x[12]}) - {x[3]}"  # N° - Obra - Codigo - Fecha
         )
         
         if certificado_id_seleccion:
@@ -593,19 +625,22 @@ elif menu_opcion == "✏️ Editar Certificado":
         certificado_seleccionado = st.selectbox(
             "Seleccione un certificado para editar:",
             options=certificados,
-            format_func=lambda x: f"#{x[1]} - {x[11]} - {x[3]}"  # N° - Obra - Fecha
+            format_func=lambda x: f"#{x[1]} - {x[11]} ({x[12]}) - {x[3]}"  # N° - Obra - Codigo - Fecha
         )
         
         if certificado_seleccionado:
             certificado_id = certificado_seleccionado[0]
             numero_certificado = certificado_seleccionado[1]
+            obra_nombre = certificado_seleccionado[11]
+            obra_codigo = certificado_seleccionado[12]
             
             # Obtener datos del certificado
             certificado_data = get_certificado_by_id(certificado_id)
             facturas_data = get_facturas_by_certificado_id(certificado_id)
             
+            # CORREGIDO: Añadido el ':' faltante
             if certificado_data and facturas_data:
-                st.markdown(f"### Editando Certificado #{numero_certificado}")
+                st.markdown(f"### Editando Certificado #{numero_certificado} - Obra: {obra_nombre} ({obra_codigo})")
                 
                 # Formulario de edición
                 col1, col2 = st.columns(2)
