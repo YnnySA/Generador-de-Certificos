@@ -10,6 +10,13 @@ from datetime import datetime
 if 'facturas_rows' not in st.session_state:
     st.session_state.facturas_rows = 1
 
+# --- NUEVA FUNCIÓN DE CALLBACK PARA NAVEGACIÓN ---
+def go_to_page(page_name):
+    """Función para navegar a una página específica usando query params."""
+    st.query_params.page = page_name
+    st.rerun()
+# --- FIN NUEVO ---
+
 # Configuración de la base de datos y directorios
 DB_NAME = "certificados.db"
 EXCEL_TEMPLATES_DIR = "data"
@@ -153,6 +160,20 @@ def update_facturas(certificado_id, facturas_data):
     conn.commit()
     conn.close()
 
+# Función para eliminar un certificado
+def delete_certificado(certificado_id):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    # Eliminar primero las facturas asociadas
+    c.execute("DELETE FROM facturas WHERE certificado_id = ?", (certificado_id,))
+    
+    # Luego eliminar el certificado
+    c.execute("DELETE FROM certificados WHERE id = ?", (certificado_id,))
+    
+    conn.commit()
+    conn.close()
+
 # Función para obtener certificados por obra (incluyendo estado)
 def get_certificados_by_obra(obra_id=None):
     conn = sqlite3.connect(DB_NAME)
@@ -271,45 +292,17 @@ def generar_informe_excel(datos, numero_certificado):
         ws['E32'] = f"{datos['total_facturas']:,.2f} CUP"
         
         # --- NUEVO: Mostrar estado y comentario en el informe ---
-        # Añadir un cuadro de texto debajo de las firmas para el estado
         if 'estado' in datos and datos['estado'] != 'Activo':
-            from openpyxl.drawing.text import Paragraph, ParagraphProperties, CharacterProperties
-            from openpyxl.drawing.text import Font as DrawingFont
-            from openpyxl.drawing.text import RichText
-            from openpyxl.chart.shapes import GraphicalProperties
-            from openpyxl.drawing.colors import ColorChoice
-            from openpyxl.styles import Font, PatternFill, Border, Side
-            
-            # Crear un cuadro de texto (TextBox) debajo de las firmas (por ejemplo, fila 40)
-            # Nota: openpyxl no tiene una forma directa de crear TextBox dinámico, 
-            # pero podemos usar comentarios o insertar texto en una celda con formato especial.
-            # Opción más sencilla: Usar una celda específica y darle formato.
-            
-            celda_estado = 'B40' # Elegir una celda debajo de las firmas
-            ws[celda_estado] = f"ESTADO DEL CERTIFICADO: {datos['estado']}"
-            if datos.get('comentario_estado'):
-                ws[celda_estado + ':B42'] = f"{ws[celda_estado].value}\n\nComentario: {datos['comentario_estado']}"
-            
-            # Aplicar formato al texto del estado
-            ws[celda_estado].font = Font(bold=True, color="FF0000") # Rojo para destacar
-            # Si el comentario está en otra celda, también se puede formatear
-            # ws[celda_estado].alignment = openpyxl.styles.Alignment(wrap_text=True)
-            
-            # Opción alternativa: Usar un comentario en una celda visible
-            # from openpyxl.comments import Comment
-            # comment = Comment(f"ESTADO: {datos['estado']}\n{datos.get('comentario_estado', '')}", "Sistema")
-            # ws['A1'].comment = comment # Asignar a una celda visible
-            
-            # Opción más avanzada (requiere manejo de shapes, complejo):
-            # Se podría insertar un rectángulo con texto, pero es más complejo con openpyxl.
-            # Por simplicidad, usaremos la celda con formato.
+            from openpyxl.styles import Font, Alignment, Border, Side
             
             # Para asegurar que se vea bien, fusionamos celdas
-            ws.merge_cells(f'{celda_estado}:F42')
-            cell = ws[celda_estado]
+            celda_inicio = 'B40'
+            celda_fin = 'F42'
+            ws.merge_cells(f'{celda_inicio}:{celda_fin}')
+            cell = ws[celda_inicio]
             cell.value = f"⚠️ ESTADO DEL CERTIFICADO: {datos['estado']}\n\n📝 Comentario: {datos.get('comentario_estado', 'Ninguno')}"
             cell.font = Font(bold=True, color="FF0000", size=12)
-            cell.alignment = openpyxl.styles.Alignment(wrap_text=True, vertical='top')
+            cell.alignment = Alignment(wrap_text=True, vertical='top')
             
             # Agregar un borde rojo para hacerlo más visible
             thin_border = Border(
@@ -318,9 +311,9 @@ def generar_informe_excel(datos, numero_certificado):
                 top=Side(style='thin', color='FF0000'),
                 bottom=Side(style='thin', color='FF0000')
             )
-            for row in ws[f'{celda_estado}:F42']:
-                for cell in row:
-                    cell.border = thin_border
+            for row in ws[f'{celda_inicio}:{celda_fin}']:
+                for c in row:
+                    c.border = thin_border
                     
         # --- FIN NUEVO ---
         
@@ -372,252 +365,322 @@ init_db()
 
 # ==================== INTERFAZ DE USUARIO ====================
 
-# Sidebar para navegación
-st.sidebar.title("_CERTIFICADOS")
-menu_opcion = st.sidebar.radio(
-    "Seleccione una opción:",
-    ["🏠 Crear Nuevo Certificado", "📋 Ver Certificados", "✏️ Editar Certificado"]
+# Configuración del estilo de la aplicación
+st.set_page_config(
+    page_title="Certificados de Obras",
+    page_icon="🏗️",
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
-if menu_opcion == "🏠 Crear Nuevo Certificado":
-    st.title("Crear Nuevo Certificado")
-    
-    encabezado_superior = st.columns([0.20, 0.70, 0.20], vertical_alignment="bottom")
-
-    with encabezado_superior[0]:
-        st.image('logo.png', width=150)
-    with encabezado_superior[1]:
-        st.header('Inmobiliaria ALMEST \n UBI Obras Varias')
-    with encabezado_superior[2]:
-        fecha = st.date_input(' ', format='DD/MM/YYYY')
-
-    st.write('Certificamos que los valores de las facturas que se relacionan corresponden a los  documentos legales debidamente autorizados y que se ajustan a la obra de referencia.')
-    contrato = st.text_input('No. Contrato')
-    contratista = st.text_input('Contratista')
-
-    # Obtener obras de la base de datos
-    data_obras = pd.DataFrame(
-        {
-        "Obras": ['Mejoras Cayo Saetía', 'Marina Cayo Saetía', 'Viviendas Mayarí', 'Delfinario Cayo Saetía', 'Canal Dumois'], 
-        "Código de Obra": [759, 677, 699, 605, 872],
-        "Aprobación": ['A 37-018-15', 'A 37-024-19', 'A 37-037-20', 'A 37-025-19', 'A 37-038-21'],   
-        })
-
-    obras = st.selectbox('Obra',data_obras["Obras"], index=None, placeholder="Despliegue y seleccione una Obra")
-
-    # Variables para almacenar datos de la obra seleccionada
-    codigo_obra = None
-    nombre_obra = None
-    aprobacion = None
-    obra_id = None
-
-    # Cuando se selecciona una obra
-    if obras:
-        # Filtrar el DataFrame por la obra seleccionada
-        obra_seleccionada = data_obras[data_obras["Obras"] == obras]
-        
-        # Verificar que se encontró la obra
-        if not obra_seleccionada.empty:
-            # Obtener el código de obra seleccionada
-            codigo_obra = obra_seleccionada["Código de Obra"].iloc[0]
-            nombre_obra = obra_seleccionada["Obras"].iloc[0]
-            
-            # Obtener ID de la obra de la base de datos
-            obras_db = get_all_obras()
-            for obra_db in obras_db:
-                if obra_db[1] == nombre_obra and obra_db[2] == codigo_obra:
-                    obra_id = obra_db[0]
-                    break
-            
-            col1, col2, col3 = st.columns([1, 1, 1])
-            with col2:
-                # Mostrar el código concatenado con el nombre de la Obra.
-                st.write(f"Obra {codigo_obra}  {nombre_obra}")
-
-            # Obtener la Aprobación de la obra en cuestión
-            aprobacion = obra_seleccionada["Aprobación"].iloc[0]  
-            
-            col1, col2 = st.columns([2, 1])
-            with col1:
-                # Mostrar el resultado
-                st.write(f"Aprobación: {aprobacion}")
-            with col2:            
-                # Mostrar el código del objeto de obra                    
-                st.write(f"CODIGO DE OBRA  {codigo_obra}02")        
-        else:
-            st.warning("No se encontraron datos para esta obra")
-
-    valor_contrato = st.number_input(
-        'Valor Total del Contrato (CUP):',
-        min_value=0.0,
-        max_value=1000000000.0,
-        value=0.0,
-        step=1000.0,
-        format="%.2f",
-        help="Introduzca el monto total del contrato en CUP"
-    )
-
-    valor_pagado = st.number_input(
-        'Valor Total Certificado (CUP):',
-        min_value=0.0,
-        max_value=1000000000.0,
-        value=0.0,
-        step=1000.0,
-        format="%.2f",
-        help="Introduzca el monto total del contrato en CUP"
-    )
-
-    # Botones para agregar/eliminar filas
-    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 3])
-    with col_btn1:
-        st.button("➕ Agregar Factura", on_click=agregar_fila)
-    with col_btn2:
-        st.button("➖ Eliminar Factura", on_click=eliminar_fila)
-
-    st.divider()
-
-    # Listas para almacenar datos de facturas
-    facturas_data = []
-
-    # Crear las filas de facturas
-    for i in range(st.session_state.facturas_rows):
-        st.markdown(f"**Factura No {i+1}**")
-        proovedores, facturas, importe, codigo = st.columns([2, 2, 1.5, 1])
-        
-        with proovedores:
-            proveedor_val = st.text_input(f"Proveedor", key=f"proveedor_{i}")
-            
-        with facturas:
-            factura_val = st.text_input(f"Factura", key=f"factura_{i}")
-            
-        with importe:
-            importe_factura = st.number_input(f"Importe", 
-                                            format="%.2f", 
-                                            step=1000.0,
-                                            key=f"importe_{i}")
-            # Mostrar importe formateado
-            if importe_factura > 0:
-                st.write(f"{importe_factura:,.2f} CUP")
-        
-        with codigo:
-            codigo_val = st.text_input(f"Código", key=f"codigo_{i}")
-        
-        # Almacenar datos de la factura
-        facturas_data.append({
-            'proveedor': proveedor_val,
-            'factura': factura_val,
-            'importe': importe_factura,
-            'codigo': codigo_val
-        })
-        
-        st.divider()
-
-    # Calcular y mostrar el total de todas las facturas
-    total_facturas = sum(f['importe'] for f in facturas_data)
-
-    # Mostrar el total formateado
+# Sidebar para navegación
+with st.sidebar:
+    st.title("🏗️ _CERTIFICADOS")
     st.markdown("---")
-    col_total1, col_total2, col_total3 = st.columns([1.1, 2, 2])
-    with col_total2:
-        st.markdown("**TOTAL DE FACTURAS:**")
-    with col_total3:
-        st.markdown(f"**{total_facturas:,.2f} CUP**")
+    
+    # --- NUEVA LÓGICA DE NAVEGACIÓN CON QUERY PARAMS ---
+    
+    # Definir las páginas disponibles
+    pages = {
+        "🏠 Crear Nuevo Certificado": "crear",
+        "📋 Ver Certificados": "ver",
+        "✏️ Editar Certificado": "editar"
+    }
+    
+    # Obtener la página actual de los query params, por defecto es "crear"
+    current_page = st.query_params.get("page", "crear")
+    
+    # Encontrar el índice de la página actual para el radio button
+    try:
+        index = list(pages.values()).index(current_page)
+    except ValueError:
+        index = 0 # Por defecto a la primera página si el query param es inválido
+    
+    # El radio button ahora es solo para mostrar, no para controlar el estado
+    selected_page_name = st.radio(
+        "Seleccione una opción:",
+        options=list(pages.keys()),
+        index=index
+    )
+    
+    # Si el usuario selecciona una opción diferente en el radio, actualizamos el query param
+    if pages[selected_page_name] != current_page:
+        go_to_page(pages[selected_page_name])
+        
+    # Determinar la opción del menú basada en el query param
+    menu_opcion = selected_page_name
+
+    # --- FIN NUEVA LÓGICA ---
+      
+    # Información adicional en el sidebar
+    st.markdown("---")
+    st.info("Sistema de gestión de certificados para obras de construcción")
+
+if menu_opcion == "🏠 Crear Nuevo Certificado":
+    st.title("📄 Crear Nuevo Certificado")
+    
+    # Contenedor para el encabezado
+    with st.container():
+        encabezado_superior = st.columns([0.20, 0.70, 0.20], vertical_alignment="bottom")
+
+        with encabezado_superior[0]:
+            # Verificar si existe el logo antes de mostrarlo
+            if os.path.exists('logo.png'):
+                st.image('logo.png', width=150)
+            else:
+                st.markdown("🏢")
+        with encabezado_superior[1]:
+            st.header('Inmobiliaria ALMEST \n UBI Obras Varias')
+        with encabezado_superior[2]:
+            fecha = st.date_input('Fecha', format='DD/MM/YYYY', value=datetime.now().date())
+
+    st.write('Certificamos que los valores de las facturas que se relacionan corresponden a los documentos legales debidamente autorizados y que se ajustan a la obra de referencia.')
+    
+    # Sección de información del contrato
+    st.subheader("📋 Información del Contrato")
+    with st.container():
+        col1, col2 = st.columns(2)
+        with col1:
+            contrato = st.text_input('No. Contrato')
+        with col2:
+            contratista = st.text_input('Contratista')
+
+    # Sección de información de la obra
+    st.subheader("🏗️ Información de la Obra")
+    with st.container():
+        # Obtener obras de la base de datos
+        data_obras = pd.DataFrame(
+            {
+            "Obras": ['Mejoras Cayo Saetía', 'Marina Cayo Saetía', 'Viviendas Mayarí', 'Delfinario Cayo Saetía', 'Canal Dumois'], 
+            "Código de Obra": [759, 677, 699, 605, 872],
+            "Aprobación": ['A 37-018-15', 'A 37-024-19', 'A 37-037-20', 'A 37-025-19', 'A 37-038-21'],   
+            })
+
+        obras = st.selectbox('Obra',data_obras["Obras"], index=None, placeholder="Despliegue y seleccione una Obra")
+
+        # Variables para almacenar datos de la obra seleccionada
+        codigo_obra = None
+        nombre_obra = None
+        aprobacion = None
+        obra_id = None
+
+        # Cuando se selecciona una obra
+        if obras:
+            # Filtrar el DataFrame por la obra seleccionada
+            obra_seleccionada = data_obras[data_obras["Obras"] == obras]
+            
+            # Verificar que se encontró la obra
+            if not obra_seleccionada.empty:
+                # Obtener el código de obra seleccionada
+                codigo_obra = obra_seleccionada["Código de Obra"].iloc[0]
+                nombre_obra = obra_seleccionada["Obras"].iloc[0]
+                
+                # Obtener ID de la obra de la base de datos
+                obras_db = get_all_obras()
+                for obra_db in obras_db:
+                    if obra_db[1] == nombre_obra and obra_db[2] == codigo_obra:
+                        obra_id = obra_db[0]
+                        break
+                
+                # Mostrar información de la obra seleccionada
+                st.info(f"**Obra seleccionada:** {codigo_obra} - {nombre_obra}")
+                
+                # Obtener la Aprobación de la obra en cuestión
+                aprobacion = obra_seleccionada["Aprobación"].iloc[0]  
+                st.info(f"**Aprobación:** {aprobacion}")
+                st.info(f"**Código de Obra:** {codigo_obra}02")
+            else:
+                st.warning("No se encontraron datos para esta obra")
+
+    # Sección de valores económicos
+    st.subheader("💰 Valores Económicos")
+    with st.container():
+        col1, col2 = st.columns(2)
+        with col1:
+            valor_contrato = st.number_input(
+                'Valor Total del Contrato (CUP):',
+                min_value=0.0,
+                max_value=1000000000.0,
+                value=0.0,
+                step=1000.0,
+                format="%.2f",
+                help="Introduzca el monto total del contrato en CUP"
+            )
+        with col2:
+            valor_pagado = st.number_input(
+                'Valor Total Certificado (CUP):',
+                min_value=0.0,
+                max_value=1000000000.0,
+                value=0.0,
+                step=1000.0,
+                format="%.2f",
+                help="Introduzca el monto total del contrato en CUP"
+            )
+
+    # Sección de facturas
+    st.subheader("📋 Facturas")
+    with st.container():
+        # Botones para agregar/eliminar filas
+        col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 3])
+        with col_btn1:
+            st.button("➕ Agregar Factura", on_click=agregar_fila, type="primary")
+        with col_btn2:
+            st.button("➖ Eliminar Factura", on_click=eliminar_fila, type="secondary")
+        with col_btn3:
+            st.write("")
+
         st.divider()
 
-    st.write(" ")
-    st.write(" ")
-    st.write(" ")
+        # Listas para almacenar datos de facturas
+        facturas_data = []
 
-    pie1, pie2, pie3 = st.columns([1,1,1.5])
+        # Crear las filas de facturas
+        for i in range(st.session_state.facturas_rows):
+            st.markdown(f"**Factura No {i+1}**")
+            proovedores, facturas, importe, codigo = st.columns([2, 2, 1.5, 1])
+            
+            with proovedores:
+                proveedor_val = st.text_input(f"Proveedor", key=f"proveedor_{i}")
+                
+            with facturas:
+                factura_val = st.text_input(f"Factura", key=f"factura_{i}")
+                
+            with importe:
+                importe_factura = st.number_input(f"Importe", 
+                                                format="%.2f", 
+                                                step=1000.0,
+                                                key=f"importe_{i}")
+                # Mostrar importe formateado
+                if importe_factura > 0:
+                    st.caption(f"{importe_factura:,.2f} CUP")
+            
+            with codigo:
+                codigo_val = st.text_input(f"Código", key=f"codigo_{i}")
+            
+            # Almacenar datos de la factura
+            facturas_data.append({
+                'proveedor': proveedor_val,
+                'factura': factura_val,
+                'importe': importe_factura,
+                'codigo': codigo_val
+            })
+            
+            st.divider()
 
-    with pie1:
-        st.write("Firma:")
-        st.write("Especialista en Inversiones")
-        st.write("Ing. Yenny Sánchez Aguilar")
-        
-    with pie3:
-        st.write("Firma:")
-        st.write("Jefe de Grupo Técnico UBI Obras Varias.")
-        st.write("Ing. Osvaldo Sánchez Breff")
+        # Calcular y mostrar el total de todas las facturas
+        total_facturas = sum(f['importe'] for f in facturas_data)
+
+        # Mostrar el total formateado
+        st.markdown("---")
+        col_total1, col_total2, col_total3 = st.columns([1.1, 2, 2])
+        with col_total1:
+            st.write("")
+        with col_total2:
+            st.markdown("**TOTAL DE FACTURAS:**")
+        with col_total3:
+            st.markdown(f"**{total_facturas:,.2f} CUP**")
+            st.divider()
+
+    # Sección de firmas
+    st.subheader("✍️ Firmas")
+    with st.container():
+        st.write(" ")
+        pie1, _, pie3 = st.columns([1, 0.5, 1.5])
+
+        with pie1:
+            st.write("**Firma:**")
+            st.write("Especialista en Inversiones")
+            st.write("**Ing. Yenny Sánchez Aguilar**")
+            
+        with pie3:
+            st.write("**Firma:**")
+            st.write("Jefe de Grupo Técnico UBI Obras Varias.")
+            st.write("**Ing. Osvaldo Sánchez Breff**")
 
     # Botón para generar el informe
     st.markdown("---")
-    if st.button("📄 Generar Informe en Excel"):
-        # Validar campos obligatorios
-        errores = validar_campos_obligatorios(fecha, obras, facturas_data)
-        
-        if errores:
-            # Mostrar errores
-            st.error("🚨 Por favor corrija los siguientes errores antes de generar el informe:")
-            for error in errores:
-                st.write(error)
-        else:
-            # Verificar que se haya seleccionado una obra para obtener su ID
-            if not obra_id:
-                 st.error("❌ Error: No se pudo identificar la obra seleccionada.")
-            else:
-                # Obtener número de certificado consecutivo PARA LA OBRA SELECCIONADA
-                numero_certificado = get_next_certificado_number_por_obra(obra_id)
+    with st.container():
+        col1, col2, col3 = st.columns([1, 2, 1])
+        with col2:
+            if st.button("📄 Generar Informe en Excel", type="primary", use_container_width=True):
+                # Validar campos obligatorios
+                errores = validar_campos_obligatorios(fecha, obras, facturas_data)
                 
-                # Recopilar todos los datos
-                datos_informe = {
-                    'fecha': fecha,
-                    'contrato': contrato,
-                    'contratista': contratista,
-                    'obra': f"{codigo_obra} {nombre_obra}" if codigo_obra and nombre_obra else "",
-                    'codigo_obra': f"{codigo_obra}02" if codigo_obra else "",
-                    'nombre_obra': nombre_obra,
-                    'aprobacion': aprobacion,
-                    'valor_contrato': valor_contrato,
-                    'valor_pagado': valor_pagado,
-                    'facturas': facturas_data,
-                    'total_facturas': total_facturas,
-                    # Por defecto, un nuevo certificado es 'Activo'
-                    'estado': 'Activo',
-                    'comentario_estado': None
-                }
-                
-                # Generar el informe
-                excel_data = generar_informe_excel(datos_informe, numero_certificado)
-                
-                if excel_data:
-                    # Crear directorio para la obra si no existe
-                    obra_dir = os.path.join(CERTIFICADOS_DIR, nombre_obra.replace("/", "_").replace("\\", "_"))
-                    os.makedirs(obra_dir, exist_ok=True)
-                    
-                    # Guardar archivo físico con el nombre que incluye el número de certificado
-                    filename = f"certificado_{numero_certificado:04d}.xlsx"
-                    file_path = os.path.join(obra_dir, filename)
-                    
-                    with open(file_path, "wb") as f:
-                        f.write(excel_data.getvalue())
-                    
-                    # Guardar en base de datos
-                    certificado_id = guardar_certificado_db(
-                        numero_certificado, obra_id, fecha, contrato, contratista,
-                        valor_contrato, valor_pagado, total_facturas, facturas_data, file_path
-                    )
-                    
-                    # Ofrecer el archivo para descargar
-                    st.download_button(
-                        label="📥 Descargar Informe",
-                        data=excel_data,
-                        file_name=filename,
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                    )
-                    st.success(f"✅ Certificado #{numero_certificado} para la obra '{nombre_obra}' generado correctamente!")
+                if errores:
+                    # Mostrar errores
+                    st.error("🚨 Por favor corrija los siguientes errores antes de generar el informe:")
+                    for error in errores:
+                        st.write(error)
                 else:
-                    st.error("❌ Error al generar el informe. Por favor intente nuevamente.")
+                    # Verificar que se haya seleccionado una obra para obtener su ID
+                    if not obra_id:
+                         st.error("❌ Error: No se pudo identificar la obra seleccionada.")
+                    else:
+                        # Obtener número de certificado consecutivo PARA LA OBRA SELECCIONADA
+                        numero_certificado = get_next_certificado_number_por_obra(obra_id)
+                        
+                        # Recopilar todos los datos
+                        datos_informe = {
+                            'fecha': fecha,
+                            'contrato': contrato,
+                            'contratista': contratista,
+                            'obra': f"{codigo_obra} {nombre_obra}" if codigo_obra and nombre_obra else "",
+                            'codigo_obra': f"{codigo_obra}02" if codigo_obra else "",
+                            'nombre_obra': nombre_obra,
+                            'aprobacion': aprobacion,
+                            'valor_contrato': valor_contrato,
+                            'valor_pagado': valor_pagado,
+                            'facturas': facturas_data,
+                            'total_facturas': total_facturas,
+                            # Por defecto, un nuevo certificado es 'Activo'
+                            'estado': 'Activo',
+                            'comentario_estado': None
+                        }
+                        
+                        # Generar el informe
+                        excel_data = generar_informe_excel(datos_informe, numero_certificado)
+                        
+                        if excel_data:
+                            # Crear directorio para la obra si no existe
+                            obra_dir = os.path.join(CERTIFICADOS_DIR, nombre_obra.replace("/", "_").replace("\\", "_"))
+                            os.makedirs(obra_dir, exist_ok=True)
+                            
+                            # Guardar archivo físico con el nombre que incluye el número de certificado
+                            filename = f"certificado_{numero_certificado:04d}.xlsx"
+                            file_path = os.path.join(obra_dir, filename)
+                            
+                            with open(file_path, "wb") as f:
+                                f.write(excel_data.getvalue())
+                            
+                            # Guardar en base de datos
+                            certificado_id = guardar_certificado_db(
+                                numero_certificado, obra_id, fecha, contrato, contratista,
+                                valor_contrato, valor_pagado, total_facturas, facturas_data, file_path
+                            )
+                            
+                            # Ofrecer el archivo para descargar
+                            st.download_button(
+                                label="📥 Descargar Informe",
+                                data=excel_data,
+                                file_name=filename,
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True
+                            )
+                            st.success(f"✅ Certificado #{numero_certificado} para la obra '{nombre_obra}' generado correctamente!")
+                        else:
+                            st.error("❌ Error al generar el informe. Por favor intente nuevamente.")
 
 elif menu_opcion == "📋 Ver Certificados":
-    st.title("Ver Certificados Generados")
+    st.title("📋 Ver Certificados Generados")
     
-    # Filtro por obra
-    obras_db = get_all_obras()
-    obras_dict = {obra[1]: obra[0] for obra in obras_db}  # nombre: id
-    obras_nombres = ["Todas las obras"] + list(obras_dict.keys())
-    
-    obra_seleccionada = st.selectbox("Filtrar por obra:", obras_nombres)
+    # Contenedor para filtros
+    with st.container():
+        # Filtro por obra
+        obras_db = get_all_obras()
+        obras_dict = {obra[1]: obra[0] for obra in obras_db}  # nombre: id
+        obras_nombres = ["Todas las obras"] + list(obras_dict.keys())
+        
+        obra_seleccionada = st.selectbox("Filtrar por obra:", obras_nombres)
     
     # Obtener certificados
     if obra_seleccionada == "Todas las obras":
@@ -627,50 +690,150 @@ elif menu_opcion == "📋 Ver Certificados":
         certificados = get_certificados_by_obra(obra_id)
     
     if certificados:
-        st.write(f"### Certificados encontrados: {len(certificados)}")
-    
-        # Mostrar tabla de certificados
-        # Las columnas seleccionadas por la consulta son:
-        # id, numero_certificado, obra_id, fecha, contrato, contratista, valor_contrato, 
-        # valor_pagado, total_facturas, archivo_path, fecha_generacion, estado, comentario_estado, obra_nombre, obra_codigo
-        # Por lo tanto, los índices son:
-        # 0:id, 1:numero_certificado, 2:obra_id, 3:fecha, 4:contrato, 5:contratista, 6:valor_contrato, 
-        # 7:valor_pagado, 8:total_facturas, 9:archivo_path, 10:fecha_generacion, 11:estado, 12:comentario_estado, 13:obra_nombre, 14:obra_codigo
+        st.write(f"### 📊 Certificados encontrados: {len(certificados)}")
         
-        # Crear DataFrame con los índices correctos
-        df_certificados = pd.DataFrame(certificados, 
-                                    columns=['ID', 'N° Certificado', 'Obra ID', 'Fecha', 'Contrato', 
-                                            'Contratista', 'Valor Contrato', 'Valor Pagado', 
-                                            'Total Facturas', 'Archivo', 'Fecha Generación', 'Estado', 'Comentario Estado', 'Obra Nombre', 'Obra Codigo'])
+        # Crear una lista para almacenar los datos con acciones
+        certificados_con_acciones = []
         
-        # Seleccionar columnas relevantes para mostrar
-        df_mostrar = df_certificados[['N° Certificado', 'Obra Nombre', 'Obra Codigo', 'Fecha', 'Contratista', 
-                                    'Valor Contrato', 'Valor Pagado', 'Total Facturas', 'Fecha Generación',
-                                    'Estado']] # Incluir 'Estado' en la tabla
-
+        # Procesar cada certificado para agregar acciones
+        for cert in certificados:
+            # Las columnas son:
+            # 0:id, 1:numero_certificado, 2:obra_id, 3:fecha, 4:contrato, 5:contratista, 6:valor_contrato, 
+            # 7:valor_pagado, 8:total_facturas, 9:archivo_path, 10:fecha_generacion, 11:estado, 12:comentario_estado, 13:obra_nombre, 14:obra_codigo
+            cert_dict = {
+                'ID': cert[0],
+                'N° Certificado': cert[1],
+                'Obra Nombre': cert[13],
+                'Obra Codigo': cert[14],
+                'Fecha': cert[3],
+                'Contratista': cert[5],
+                'Valor Contrato': cert[6],
+                'Valor Pagado': cert[7],
+                'Total Facturas': cert[8],
+                'Fecha Generación': cert[10],
+                'Estado': cert[11]
+            }
+            certificados_con_acciones.append(cert_dict)
+        
+        # Crear DataFrame con los datos
+        df_mostrar = pd.DataFrame(certificados_con_acciones)
+        
         # Formatear valores monetarios
         df_mostrar['Valor Contrato'] = df_mostrar['Valor Contrato'].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) and x != 0 else "0.00")
         df_mostrar['Valor Pagado'] = df_mostrar['Valor Pagado'].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) and x != 0 else "0.00")
         df_mostrar['Total Facturas'] = df_mostrar['Total Facturas'].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) and x != 0 else "0.00")
         
-        # Aplicar estilo condicional para el estado
+        # Aplicar estilo condicional para el estado con emojis
+        def format_estado_with_emoji(val):
+            if val in ['Revertido', 'Cancelado']:
+                return f"🔴 {val}"
+            elif val == 'Activo':
+                return f"🟢 {val}"
+            else:
+                return f"⚪ {val}"
+        
+        df_mostrar['Estado'] = df_mostrar['Estado'].apply(format_estado_with_emoji)
+        
+        # Aplicar estilo condicional para el fondo de la columna Estado
         def highlight_estado(val):
-            color = 'red' if val in ['Revertido', 'Cancelado'] else 'green' if val == 'Activo' else ''
+            # Extraer solo el nombre del estado sin el emoji para aplicar colores
+            estado = val.split(' ', 1)[1] if ' ' in val else val
+            color = 'red' if estado in ['Revertido', 'Cancelado'] else 'green' if estado == 'Activo' else ''
             return f'background-color: {color}'
         
-        st.dataframe(df_mostrar.style.applymap(highlight_estado, subset=['Estado']), use_container_width=True)
+        # Mostrar la tabla con estilo
+        st.dataframe(df_mostrar.style.applymap(highlight_estado, subset=['Estado']), use_container_width=True, height=500)
+        
+        # Sección para seleccionar certificado directamente desde la tabla
+        st.markdown("---")
+        st.subheader("⚡ Acciones Rápidas")
+        st.info("Para seleccionar un certificado, primero identifíquelo en la tabla superior. "
+                "Después, ingrese su ID en el campo a continuación para realizar acciones sobre él.")
+        
+        # Crear campos para ingresar manualmente el ID del certificado
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            cert_id_input = st.text_input("Ingrese el ID del certificado (visible en la tabla):")
+        with col2:
+            st.write("")  # Espacio para alineación
+            st.write("")  # Espacio para alineación
+            if st.button("🔍 Buscar"):
+                if cert_id_input.isdigit():
+                    st.session_state.selected_cert_id = int(cert_id_input)
+                    st.rerun()
+                else:
+                    st.warning("Por favor, ingrese un ID válido (número entero)")
+        
+        # Verificar si hay un certificado seleccionado
+        selected_cert = None
+        if 'selected_cert_id' in st.session_state:
+            cert_id = st.session_state.selected_cert_id
+            for cert in certificados:
+                if cert[0] == cert_id:
+                    selected_cert = cert
+                    break
+            
+            if selected_cert:
+                st.success(f"Certificado seleccionado: #{selected_cert[1]} - {selected_cert[13]} ({selected_cert[14]}) - {selected_cert[3]}")
+            else:
+                st.error("Certificado no encontrado. Por favor, verifique el ID.")
+                del st.session_state.selected_cert_id
+        
+        # Si hay un certificado seleccionado, mostrar las acciones
+        if selected_cert:
+            cert_id = selected_cert[0]
+            cert_numero = selected_cert[1]
+            cert_obra = selected_cert[13]
+            
+            st.markdown("---")
+            col1, col2 = st.columns(2)
+            with col1:
+                # Botón para editar
+                if st.button("✏️ Editar Certificado", type="primary", use_container_width=True):
+                    st.session_state.edit_cert_id = cert_id
+                    # --- NUEVO: Navegamos usando query params ---
+                    go_to_page("editar")
+            
+            with col2:
+                # Botón para eliminar
+                if st.button("🗑️ Eliminar Certificado", type="secondary", use_container_width=True):
+                    st.session_state.delete_cert_id = cert_id
+                    st.session_state.delete_cert_info = (cert_numero, cert_obra)
+                    st.rerun()
+            
+            # Mostrar confirmación de eliminación si se ha solicitado
+            if 'delete_cert_id' in st.session_state and st.session_state.delete_cert_id == cert_id:
+                st.warning(f"⚠️ ¿Está seguro que desea eliminar el certificado #{st.session_state.delete_cert_info[0]} de la obra {st.session_state.delete_cert_info[1]}?")
+                st.warning("Esta acción no se puede deshacer y eliminará todas las facturas asociadas.")
+                
+                col3, col4 = st.columns(2)
+                with col3:
+                    if st.button("✅ Confirmar Eliminación", type="primary"):
+                        delete_certificado(st.session_state.delete_cert_id)
+                        st.success(f"Certificado #{st.session_state.delete_cert_info[0]} eliminado correctamente!")
+                        # Limpiar el estado y recargar
+                        del st.session_state.delete_cert_id
+                        del st.session_state.delete_cert_info
+                        if 'selected_cert_id' in st.session_state:
+                            del st.session_state.selected_cert_id
+                        st.rerun()
+                
+                with col4:
+                    if st.button("❌ Cancelar", type="secondary"):
+                        # Limpiar el estado
+                        del st.session_state.delete_cert_id
+                        del st.session_state.delete_cert_info
+                        st.rerun()
+        else:
+            st.info("Ingrese el ID de un certificado para habilitar las acciones rápidas.")
         
         # Opción para descargar certificados individuales
         st.markdown("---")
-        st.subheader("Descargar Certificado")
-        # --- CORREGIDO format_func ---
-        # Asegurarse de que los índices coincidan con las columnas de la consulta
-        # 1: numero_certificado, 3: fecha, 13: obra_nombre, 14: obra_codigo, 11: estado
+        st.subheader("📥 Descargar Certificado")
         certificado_id_seleccion = st.selectbox(
             "Seleccione un certificado para descargar:",
             options=certificados,
-            format_func=lambda x: f"#{x[1]} - {x[13]} ({x[14]}) - {x[3]} - [{x[11] if len(x) > 11 else 'N/A'}]"  # N° - Obra - Codigo - Fecha - [Estado]
-            # Añadido manejo de error por si 'x' no tiene suficientes elementos o 'estado' es None
+            format_func=lambda x: f"#{x[1]} - {x[13]} ({x[14]}) - {x[3]} - [{x[11] if len(x) > 11 else 'N/A'}]"
         )
         
         if certificado_id_seleccion:
@@ -683,120 +846,132 @@ elif menu_opcion == "📋 Ver Certificados":
                         label="📥 Descargar Certificado Seleccionado",
                         data=file,
                         file_name=os.path.basename(archivo_path),
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True
                     )
             else:
                 st.warning("Archivo no encontrado. Puede que haya sido movido o eliminado.")
     else:
-        st.info("No se encontraron certificados.")
+        st.info("📭 No se encontraron certificados.")
         
-    
-
 elif menu_opcion == "✏️ Editar Certificado":
-    st.title("Editar Certificado")
+    st.title("✏️ Editar Certificado")
     
-    # Obtener todos los certificados
-    certificados = get_certificados_by_obra()
-    
-    if certificados:
-        # Selector de certificado
-        # --- CORREGIDO format_func ---
-        # Asegurarse de que los índices coincidan con las columnas de la consulta
-        # 1: numero_certificado, 3: fecha, 13: obra_nombre, 14: obra_codigo, 11: estado
-        certificado_seleccionado = st.selectbox(
-            "Seleccione un certificado para editar:",
-            options=certificados,
-            format_func=lambda x: f"#{x[1]} - {x[13]} ({x[14]}) - {x[3]} - [{x[11] if len(x) > 11 else 'N/A'}]"  # N° - Obra - Codigo - Fecha - [Estado]
-            # Añadido manejo de error por si 'x' no tiene suficientes elementos
-        )
-        # --- FIN CORREGIDO ---
-        
-        if certificado_seleccionado:
-            certificado_id = certificado_seleccionado[0]
-            numero_certificado = certificado_seleccionado[1]
-            obra_nombre = certificado_seleccionado[13] # Corregido índice
-            obra_codigo = certificado_seleccionado[14] # Corregido índice
-            # Obtener estado y comentario actuales (con manejo de errores)
-            estado_actual = certificado_seleccionado[11] if len(certificado_seleccionado) > 11 else 'Activo'
-            comentario_actual = certificado_seleccionado[12] if len(certificado_seleccionado) > 12 else ''
-            
-            # Obtener datos del certificado
-            certificado_data = get_certificado_by_id(certificado_id)
-            facturas_data = get_facturas_by_certificado_id(certificado_id)
-            
-            # CORREGIDO: Añadido el ':' faltante
-            if certificado_data and facturas_data: # Corregido 'facturas_' a 'facturas_data'
-                st.markdown(f"### Editando Certificado #{numero_certificado} - Obra: {obra_nombre} ({obra_codigo})")
-                
-                # Mostrar estado actual
-                st.info(f"Estado actual: **{estado_actual}**")
-                
-                # Formulario de edición
-                col1, col2 = st.columns(2)
-                with col1:
-                    fecha_edit = st.date_input("Fecha:", value=datetime.strptime(certificado_data[3], "%Y-%m-%d").date() if certificado_data[3] else datetime.now().date())
-                    contrato_edit = st.text_input("Contrato:", value=certificado_data[4] or "")
-                    valor_contrato_edit = st.number_input("Valor Contrato:", value=float(certificado_data[6] or 0.0), format="%.2f")
-                    # --- NUEVO: Campos para estado y comentario ---
-                    estado_edit = st.selectbox("Estado del Certificado:", 
-                                              options=['Activo', 'Revertido', 'Cancelado'],
-                                              index=['Activo', 'Revertido', 'Cancelado'].index(estado_actual) if estado_actual in ['Activo', 'Revertido', 'Cancelado'] else 0)
-                    comentario_estado_edit = st.text_area("Comentario sobre el estado (opcional):", 
-                                                         value=comentario_actual or "",
-                                                         height=100)
-                    # --- FIN NUEVO ---
-                
-                with col2:
-                    contratista_edit = st.text_input("Contratista:", value=certificado_data[5] or "")
-                    valor_pagado_edit = st.number_input("Valor Pagado:", value=float(certificado_data[7] or 0.0), format="%.2f")
-                    total_facturas_edit = st.number_input("Total Facturas:", value=float(certificado_data[8] or 0.0), format="%.2f")
-                
-                st.markdown("---")
-                st.subheader("Facturas")
-                
-                # Editor de facturas
-                facturas_edit_data = []
-                for i, factura in enumerate(facturas_data):
-                    st.markdown(f"**Factura {i+1}**")
-                    col_prov, col_fact, col_imp, col_cod = st.columns(4)
-                    
-                    with col_prov:
-                        proveedor = st.text_input(f"Proveedor {i+1}", value=factura[0], key=f"edit_prov_{i}")
-                    with col_fact:
-                        numero_fact = st.text_input(f"Factura {i+1}", value=factura[1], key=f"edit_fact_{i}")
-                    with col_imp:
-                        importe = st.number_input(f"Importe {i+1}", value=float(factura[2]), format="%.2f", key=f"edit_imp_{i}")
-                    with col_cod:
-                        codigo = st.text_input(f"Código {i+1}", value=factura[3] or "", key=f"edit_cod_{i}")
-                    
-                    facturas_edit_data.append({
-                        'proveedor': proveedor,
-                        'factura': numero_fact,
-                        'importe': importe,
-                        'codigo': codigo
-                    })
-                
-                # Botón para guardar cambios
-                if st.button("💾 Guardar Cambios"):
-                    # Validar datos
-                    if total_facturas_edit <= 0:
-                        st.error("El total de facturas debe ser mayor que 0")
-                    else:
-                        # Actualizar certificado (incluyendo estado y comentario)
-                        update_certificado(certificado_id, fecha_edit, contrato_edit, contratista_edit,
-                                         valor_contrato_edit, valor_pagado_edit, total_facturas_edit,
-                                         estado_edit, comentario_estado_edit) # Pasar estado y comentario
-                        
-                        # Actualizar facturas
-                        update_facturas(certificado_id, facturas_edit_data)
-                        
-                        st.success("✅ Certificado actualizado correctamente!")
-                        
-                        # Opcional: regenerar el archivo Excel con los nuevos datos (incluyendo estado)
-                        st.info("💡 Para regenerar el archivo Excel con los cambios (incluyendo el nuevo estado), descárguelo nuevamente desde la sección 'Ver Certificados'")
-            else:
-                st.error("Error al cargar los datos del certificado")
+    # --- LÓGICA UNIFICADA PARA OBTENER EL CERTIFICADO A EDITAR ---
+    certificado_id = None
+
+    # Ruta A: Viniendo desde "Ver Certificados" a través del estado de la sesión
+    if 'edit_cert_id' in st.session_state:
+        certificado_id = st.session_state.edit_cert_id
+        # Limpiamos el estado inmediatamente después de usarlo para evitar conflictos
+        del st.session_state.edit_cert_id
+
+    # Ruta B: Viniendo directamente desde el menú lateral
     else:
-        st.info("No hay certificados disponibles para editar.")
-    
-    
+        st.subheader("Seleccionar un certificado para editar")
+        todos_los_certificados = get_certificados_by_obra()
+        
+        if not todos_los_certificados:
+            st.info("📭 No hay certificados disponibles para editar.")
+            st.stop()
+        
+        certificado_seleccionado_tuple = st.selectbox(
+            "Seleccione un certificado:",
+            options=todos_los_certificados,
+            format_func=lambda x: f"#{x[1]} - {x[13]} ({x[14]}) - {x[3]} - [{x[11] if len(x) > 11 else 'N/A'}]"
+        )
+        certificado_id = certificado_seleccionado_tuple[0]
+
+    # --- OBTENER LOS DATOS Y PREPARAR VARIABLES ---
+    # Ahora, sin importar la ruta, tenemos un certificado_id. Obtenemos los datos UNA SOLA VEZ.
+    if certificado_id:
+        certificado_data = get_certificado_by_id(certificado_id)
+        if not certificado_data:
+            st.error("No se pudo encontrar el certificado con el ID especificado.")
+            st.stop()
+
+        # Desempaquetamos los datos en variables con nombres claros para el resto de la sección
+        # Índices: 0:id, 1:numero, 3:fecha, 4:contrato, 5:contratista, 6:valor_contrato, 7:valor_pagado, 8:total_facturas, 11:estado, 12:comentario, 13:obra_nombre, 14:obra_codigo
+        numero_certificado = certificado_data[1]
+        obra_nombre = certificado_data[13]
+        obra_codigo = certificado_data[14]
+        estado_actual = certificado_data[11] if len(certificado_data) > 11 else 'Activo'
+        comentario_actual = certificado_data[12] if len(certificado_data) > 12 else ''
+        
+        # Obtener las facturas asociadas
+        facturas_data = get_facturas_by_certificado_id(certificado_id)
+
+        # --- AHORA CONSTRUIMOS LA INTERFAZ ---
+        st.markdown(f"### 📝 Editando Certificado #{numero_certificado} - Obra: {obra_nombre} ({obra_codigo})")
+        
+        # Mostrar estado actual
+        estado_color = "🔴" if estado_actual in ['Revertido', 'Cancelado'] else "🟢" if estado_actual == 'Activo' else "⚪"
+        st.info(f"{estado_color} Estado actual: **{estado_actual}**")
+        
+        # Formulario de edición
+        st.subheader("📄 Información del Certificado")
+        col1, col2 = st.columns(2)
+        with col1:
+            fecha_edit = st.date_input("Fecha:", value=datetime.strptime(certificado_data[3], "%Y-%m-%d").date() if certificado_data[3] else datetime.now().date())
+            contrato_edit = st.text_input("Contrato:", value=certificado_data[4] or "")
+            valor_contrato_edit = st.number_input("Valor Contrato:", value=float(certificado_data[6] or 0.0), format="%.2f")
+            # Campos para estado y comentario
+            estado_edit = st.selectbox("Estado del Certificado:", 
+                                      options=['Activo', 'Revertido', 'Cancelado'],
+                                      index=['Activo', 'Revertido', 'Cancelado'].index(estado_actual) if estado_actual in ['Activo', 'Revertido', 'Cancelado'] else 0)
+            comentario_estado_edit = st.text_area("Comentario sobre el estado (opcional):", 
+                                                 value=comentario_actual or "",
+                                                 height=100)
+        
+        with col2:
+            contratista_edit = st.text_input("Contratista:", value=certificado_data[5] or "")
+            valor_pagado_edit = st.number_input("Valor Pagado:", value=float(certificado_data[7] or 0.0), format="%.2f")
+            total_facturas_edit = st.number_input("Total Facturas:", value=float(certificado_data[8] or 0.0), format="%.2f")
+        
+        st.markdown("---")
+        st.subheader("📋 Facturas")
+        
+        # Editor de facturas
+        facturas_edit_data = []
+        for i, factura in enumerate(facturas_data):
+            st.markdown(f"**Factura {i+1}**")
+            col_prov, col_fact, col_imp, col_cod = st.columns(4)
+            
+            with col_prov:
+                proveedor = st.text_input(f"Proveedor {i+1}", value=factura[0], key=f"edit_prov_{i}")
+            with col_fact:
+                numero_fact = st.text_input(f"Factura {i+1}", value=factura[1], key=f"edit_fact_{i}")
+            with col_imp:
+                importe = st.number_input(f"Importe {i+1}", value=float(factura[2]), format="%.2f", key=f"edit_imp_{i}")
+            with col_cod:
+                codigo = st.text_input(f"Código {i+1}", value=factura[3] or "", key=f"edit_cod_{i}")
+            
+            facturas_edit_data.append({
+                'proveedor': proveedor,
+                'factura': numero_fact,
+                'importe': importe,
+                'codigo': codigo
+            })
+        
+        # Botón para guardar cambios
+        st.markdown("---")
+        if st.button("💾 Guardar Cambios", type="primary", use_container_width=True):
+            # Validar datos
+            if total_facturas_edit <= 0:
+                st.error("El total de facturas debe ser mayor que 0")
+            else:
+                # Actualizar certificado (incluyendo estado y comentario)
+                update_certificado(certificado_id, fecha_edit, contrato_edit, contratista_edit,
+                                     valor_contrato_edit, valor_pagado_edit, total_facturas_edit,
+                                     estado_edit, comentario_estado_edit)
+                
+                # Actualizar facturas
+                update_facturas(certificado_id, facturas_edit_data)
+                
+                st.success("✅ Certificado actualizado correctamente!")
+                
+                # --- NUEVO: Navegamos de vuelta a la lista de certificados ---
+                st.info("Redirigiendo a la lista de certificados...")
+                go_to_page("ver")
+    else:
+        st.error("No se pudo determinar el certificado a editar.")
