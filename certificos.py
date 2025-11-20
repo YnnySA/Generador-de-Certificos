@@ -9,6 +9,20 @@ from datetime import datetime
 # Inicializar session state 
 if 'facturas_rows' not in st.session_state:
     st.session_state.facturas_rows = 1
+    
+# --- NUEVO: Inicializar estado para los filtros de búsqueda avanzada ---
+if 'filtros_aplicados' not in st.session_state:
+    st.session_state.filtros_aplicados = False
+if 'filtro_obras' not in st.session_state:
+    st.session_state.filtro_obras = []
+if 'filtro_estado' not in st.session_state:
+    st.session_state.filtro_estado = []
+if 'filtro_fecha_inicio' not in st.session_state:
+    st.session_state.filtro_fecha_inicio = None
+if 'filtro_fecha_fin' not in st.session_state:
+    st.session_state.filtro_fecha_fin = None
+if 'filtro_contratista' not in st.session_state:
+    st.session_state.filtro_contratista = ""
 
 # --- NUEVA FUNCIÓN DE CALLBACK PARA NAVEGACIÓN ---
 def go_to_page(page_name):
@@ -191,6 +205,50 @@ def get_certificados_by_obra(obra_id=None):
                      JOIN obras o ON c.obra_id = o.id 
                      ORDER BY o.nombre, c.numero_certificado DESC""")
     
+    certificados = c.fetchall()
+    conn.close()
+    return certificados
+
+# --- FUNCIÓN DE BÚSQUEDA AVANZADA ---
+def buscar_certificados_con_filtros(obras_ids=None, estados=None, fecha_inicio=None, fecha_fin=None, contratista_texto=None):
+    conn = sqlite3.connect(DB_NAME)
+    c = conn.cursor()
+    
+    # Consulta base con JOIN para obtener el nombre de la obra
+    query = """
+        SELECT c.*, o.nombre as obra_nombre, o.codigo as obra_codigo
+        FROM certificados c 
+        JOIN obras o ON c.obra_id = o.id 
+        WHERE 1=1
+    """
+    params = []
+    
+    # Añadir filtros dinámicamente si se proporcionan
+    if obras_ids:
+        placeholders = ','.join(['?'] * len(obras_ids))
+        query += f" AND c.obra_id IN ({placeholders})"
+        params.extend(obras_ids)
+        
+    if estados:
+        placeholders = ','.join(['?'] * len(estados))
+        query += f" AND c.estado IN ({placeholders})"
+        params.extend(estados)
+        
+    if fecha_inicio:
+        query += " AND c.fecha >= ?"
+        params.append(fecha_inicio)
+        
+    if fecha_fin:
+        query += " AND c.fecha <= ?"
+        params.append(fecha_fin)
+        
+    if contratista_texto:
+        query += " AND c.contratista LIKE ?"
+        params.append(f'%{contratista_texto}%')
+        
+    query += " ORDER BY o.nombre, c.numero_certificado DESC"
+    
+    c.execute(query, params)
     certificados = c.fetchall()
     conn.close()
     return certificados
@@ -672,91 +730,136 @@ if menu_opcion == "🏠 Crear Nuevo Certificado":
 
 elif menu_opcion == "📋 Ver Certificados":
     st.title("📋 Ver Certificados Generados")
-    
-    # Contenedor para filtros
-    with st.container():
-        # Filtro por obra
-        obras_db = get_all_obras()
-        obras_dict = {obra[1]: obra[0] for obra in obras_db}  # nombre: id
-        obras_nombres = ["Todas las obras"] + list(obras_dict.keys())
+
+    # --- NUEVO: PANEL DE BÚSQUEDA AVANZADA ---
+    with st.expander("🔍 Búsqueda Avanzada"):
+        st.markdown("Usa los siguientes filtros para refinar tu búsqueda.")
         
-        obra_seleccionada = st.selectbox("Filtrar por obra:", obras_nombres)
+        # Obtener todas las obras para el multiselect
+        obras_db = get_all_obras()
+        opciones_obras = {f"{obra[1]} ({obra[2]})": obra[0] for obra in obras_db} # nombre (codigo): id
+
+        col1, col2 = st.columns(2)
+        with col1:
+            filtro_obras_seleccionadas = st.multiselect(
+                "Filtrar por obra(s):",
+                options=list(opciones_obras.keys()),
+                default=st.session_state.filtro_obras
+            )
+            filtro_estado_seleccionado = st.multiselect(
+                "Filtrar por estado:",
+                options=['Activo', 'Revertido', 'Cancelado'],
+                default=st.session_state.filtro_estado
+            )
+        
+        with col2:
+            filtro_fecha_inicio = st.date_input(
+                "Fecha de inicio:",
+                value=st.session_state.filtro_fecha_inicio,
+                format="YYYY-MM-DD"
+            )
+            filtro_fecha_fin = st.date_input(
+                "Fecha de fin:",
+                value=st.session_state.filtro_fecha_fin,
+                format="YYYY-MM-DD"
+            )
+        
+        filtro_contratista = st.text_input(
+            "Buscar por Contratista:",
+            value=st.session_state.filtro_contratista
+        )
+
+        col_boton_aplicar, col_boton_limpiar = st.columns(2)
+        with col_boton_aplicar:
+            if st.button("🔎 Aplicar Filtros", type="primary", use_container_width=True):
+                st.session_state.filtros_aplicados = True
+                st.session_state.filtro_obras = filtro_obras_seleccionadas
+                st.session_state.filtro_estado = filtro_estado_seleccionado
+                st.session_state.filtro_fecha_inicio = filtro_fecha_inicio
+                st.session_state.filtro_fecha_fin = filtro_fecha_fin
+                st.session_state.filtro_contratista = filtro_contratista
+                st.rerun()
+        
+        with col_boton_limpiar:
+            if st.button("🗑️ Limpiar Filtros", use_container_width=True):
+                # Eliminar variables de estado para limpiar los filtros
+                for key in ['filtros_aplicados', 'filtro_obras', 'filtro_estado', 'filtro_fecha_inicio', 'filtro_fecha_fin', 'filtro_contratista']:
+                    if key in st.session_state:
+                        del st.session_state[key]
+                st.rerun()
+    # --- FIN PANEL DE BÚSQUEDA AVANZADA ---
+
+    st.markdown("---")
     
-    # Obtener certificados
-    if obra_seleccionada == "Todas las obras":
-        certificados = get_certificados_by_obra()
+    # --- LÓGICA PARA OBTENER CERTIFICADOS ---
+    if st.session_state.get('filtros_aplicados', False):
+        # Preparar los IDs de las obras seleccionadas
+        obras_ids_filtro = [opciones_obras[obra] for obra in st.session_state.filtro_obras]
+        
+        # Llamar a la nueva función de búsqueda con los filtros del session_state
+        certificados = buscar_certificados_con_filtros(
+            obras_ids=obras_ids_filtro if obras_ids_filtro else None,
+            estados=st.session_state.filtro_estado if st.session_state.filtro_estado else None,
+            fecha_inicio=st.session_state.filtro_fecha_inicio,
+            fecha_fin=st.session_state.filtro_fecha_fin,
+            contratista_texto=st.session_state.filtro_contratista if st.session_state.filtro_contratista else None
+        )
     else:
-        obra_id = obras_dict[obra_seleccionada]
-        certificados = get_certificados_by_obra(obra_id)
+        # Si no hay filtros aplicados, obtener todos los certificados
+        certificados = get_certificados_by_obra()
+
+    # --- EL RESTO DEL CÓDIGO DE LA PÁGINA PERMANECE IGUAL ---
+    # (Mostrar la tabla, acciones rápidas, etc.)
     
     if certificados:
         st.write(f"### 📊 Certificados encontrados: {len(certificados)}")
         
+        # ... (El código para mostrar el DataFrame se mantiene exactamente igual) ...
         # Crear una lista para almacenar los datos con acciones
         certificados_con_acciones = []
         
         # Procesar cada certificado para agregar acciones
         for cert in certificados:
-            # Las columnas son:
-            # 0:id, 1:numero_certificado, 2:obra_id, 3:fecha, 4:contrato, 5:contratista, 6:valor_contrato, 
-            # 7:valor_pagado, 8:total_facturas, 9:archivo_path, 10:fecha_generacion, 11:estado, 12:comentario_estado, 13:obra_nombre, 14:obra_codigo
             cert_dict = {
-                'ID': cert[0],
-                'N° Certificado': cert[1],
-                'Obra Nombre': cert[13],
-                'Obra Codigo': cert[14],
-                'Fecha': cert[3],
-                'Contratista': cert[5],
-                'Valor Contrato': cert[6],
-                'Valor Pagado': cert[7],
-                'Total Facturas': cert[8],
-                'Fecha Generación': cert[10],
-                'Estado': cert[11]
+                'ID': cert[0], 'N° Certificado': cert[1], 'Obra Nombre': cert[13], 'Obra Codigo': cert[14],
+                'Fecha': cert[3], 'Contratista': cert[5], 'Valor Contrato': cert[6], 'Valor Pagado': cert[7],
+                'Total Facturas': cert[8], 'Fecha Generación': cert[10], 'Estado': cert[11]
             }
             certificados_con_acciones.append(cert_dict)
         
-        # Crear DataFrame con los datos
         df_mostrar = pd.DataFrame(certificados_con_acciones)
         
-        # Formatear valores monetarios
         df_mostrar['Valor Contrato'] = df_mostrar['Valor Contrato'].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) and x != 0 else "0.00")
         df_mostrar['Valor Pagado'] = df_mostrar['Valor Pagado'].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) and x != 0 else "0.00")
         df_mostrar['Total Facturas'] = df_mostrar['Total Facturas'].apply(lambda x: f"{x:,.2f}" if pd.notnull(x) and x != 0 else "0.00")
         
-        # Aplicar estilo condicional para el estado con emojis
         def format_estado_with_emoji(val):
-            if val in ['Revertido', 'Cancelado']:
-                return f"🔴 {val}"
-            elif val == 'Activo':
-                return f"🟢 {val}"
-            else:
-                return f"⚪ {val}"
+            if val in ['Revertido', 'Cancelado']: return f"🔴 {val}"
+            elif val == 'Activo': return f"🟢 {val}"
+            else: return f"⚪ {val}"
         
         df_mostrar['Estado'] = df_mostrar['Estado'].apply(format_estado_with_emoji)
         
-        # Aplicar estilo condicional para el fondo de la columna Estado
         def highlight_estado(val):
-            # Extraer solo el nombre del estado sin el emoji para aplicar colores
             estado = val.split(' ', 1)[1] if ' ' in val else val
             color = 'red' if estado in ['Revertido', 'Cancelado'] else 'green' if estado == 'Activo' else ''
             return f'background-color: {color}'
         
-        # Mostrar la tabla con estilo
         st.dataframe(df_mostrar.style.applymap(highlight_estado, subset=['Estado']), use_container_width=True, height=500)
         
+        # ... (El resto del código de "Acciones Rápidas" y "Descargar Certificado" se mantiene igual) ...
         # Sección para seleccionar certificado directamente desde la tabla
         st.markdown("---")
         st.subheader("⚡ Acciones Rápidas")
         st.info("Para seleccionar un certificado, primero identifíquelo en la tabla superior. "
                 "Después, ingrese su ID en el campo a continuación para realizar acciones sobre él.")
         
-        # Crear campos para ingresar manualmente el ID del certificado
         col1, col2 = st.columns([3, 1])
         with col1:
             cert_id_input = st.text_input("Ingrese el ID del certificado (visible en la tabla):")
         with col2:
-            st.write("")  # Espacio para alineación
-            st.write("")  # Espacio para alineación
+            st.write("")
+            st.write("")
             if st.button("🔍 Buscar"):
                 if cert_id_input.isdigit():
                     st.session_state.selected_cert_id = int(cert_id_input)
@@ -764,7 +867,6 @@ elif menu_opcion == "📋 Ver Certificados":
                 else:
                     st.warning("Por favor, ingrese un ID válido (número entero)")
         
-        # Verificar si hay un certificado seleccionado
         selected_cert = None
         if 'selected_cert_id' in st.session_state:
             cert_id = st.session_state.selected_cert_id
@@ -779,7 +881,6 @@ elif menu_opcion == "📋 Ver Certificados":
                 st.error("Certificado no encontrado. Por favor, verifique el ID.")
                 del st.session_state.selected_cert_id
         
-        # Si hay un certificado seleccionado, mostrar las acciones
         if selected_cert:
             cert_id = selected_cert[0]
             cert_numero = selected_cert[1]
@@ -788,20 +889,16 @@ elif menu_opcion == "📋 Ver Certificados":
             st.markdown("---")
             col1, col2 = st.columns(2)
             with col1:
-                # Botón para editar
                 if st.button("✏️ Editar Certificado", type="primary", use_container_width=True):
                     st.session_state.edit_cert_id = cert_id
-                    # --- NUEVO: Navegamos usando query params ---
                     go_to_page("editar")
             
             with col2:
-                # Botón para eliminar
                 if st.button("🗑️ Eliminar Certificado", type="secondary", use_container_width=True):
                     st.session_state.delete_cert_id = cert_id
                     st.session_state.delete_cert_info = (cert_numero, cert_obra)
                     st.rerun()
             
-            # Mostrar confirmación de eliminación si se ha solicitado
             if 'delete_cert_id' in st.session_state and st.session_state.delete_cert_id == cert_id:
                 st.warning(f"⚠️ ¿Está seguro que desea eliminar el certificado #{st.session_state.delete_cert_info[0]} de la obra {st.session_state.delete_cert_info[1]}?")
                 st.warning("Esta acción no se puede deshacer y eliminará todas las facturas asociadas.")
@@ -811,7 +908,6 @@ elif menu_opcion == "📋 Ver Certificados":
                     if st.button("✅ Confirmar Eliminación", type="primary"):
                         delete_certificado(st.session_state.delete_cert_id)
                         st.success(f"Certificado #{st.session_state.delete_cert_info[0]} eliminado correctamente!")
-                        # Limpiar el estado y recargar
                         del st.session_state.delete_cert_id
                         del st.session_state.delete_cert_info
                         if 'selected_cert_id' in st.session_state:
@@ -820,14 +916,12 @@ elif menu_opcion == "📋 Ver Certificados":
                 
                 with col4:
                     if st.button("❌ Cancelar", type="secondary"):
-                        # Limpiar el estado
                         del st.session_state.delete_cert_id
                         del st.session_state.delete_cert_info
                         st.rerun()
         else:
             st.info("Ingrese el ID de un certificado para habilitar las acciones rápidas.")
         
-        # Opción para descargar certificados individuales
         st.markdown("---")
         st.subheader("📥 Descargar Certificado")
         certificado_id_seleccion = st.selectbox(
@@ -837,8 +931,8 @@ elif menu_opcion == "📋 Ver Certificados":
         )
         
         if certificado_id_seleccion:
-            certificado_id = certificado_id_seleccion[0] # ID del certificado
-            archivo_path = certificado_id_seleccion[9] # archivo_path
+            certificado_id = certificado_id_seleccion[0]
+            archivo_path = certificado_id_seleccion[9]
             
             if os.path.exists(archivo_path):
                 with open(archivo_path, "rb") as file:
@@ -852,7 +946,8 @@ elif menu_opcion == "📋 Ver Certificados":
             else:
                 st.warning("Archivo no encontrado. Puede que haya sido movido o eliminado.")
     else:
-        st.info("📭 No se encontraron certificados.")
+        st.info("📭 No se encontraron certificados con los criterios seleccionados.")
+
         
 elif menu_opcion == "✏️ Editar Certificado":
     st.title("✏️ Editar Certificado")
